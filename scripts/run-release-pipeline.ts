@@ -1,16 +1,29 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { JSDOM } from "jsdom";
-import { parseDocx } from "@/lib/parser";
 import { buildPreclusters } from "@/lib/precluster";
 import { runMergePipeline, type MergeProgressEvent } from "@/lib/merger";
 import { buildGbDocxBuffer } from "@/lib/exporter";
-import type { ConceptCluster, ReviewDecision } from "@/lib/types";
+import { autoResolvePendingImportBatchForCli } from "@/lib/draftImport";
+import {
+  autoResolvePendingGoldStandardImportForCli,
+  buildPendingGoldStandardImportFromText
+} from "@/lib/goldStandard";
+import { normalizeTemplateLookup, parseTemplateDocx } from "@/lib/templateParser";
+import type {
+  ConceptCluster,
+  DraftCleaningIssue,
+  GoldStandardImportIssue,
+  ReviewDecision,
+  TemplateOutline
+} from "@/lib/types";
 
 type CliOptions = {
   inputDir: string;
-  primaryAuthor: string;
   outputPath: string;
+  templatePath: string;
+  goldStandardCsvPath: string;
+  primaryAuthor: string;
   apiKeyEnv: string;
   apiKey?: string;
   apiKeyFile?: string;
@@ -21,12 +34,18 @@ function printHelp() {
   console.log(`CFH Release Pipeline
 
 Usage:
-  npm run pipeline:release -- --input-dir <path> --primary-author <name> --output-path <path> [options]
+  npm run pipeline:release -- --template-path <path> --input-dir <path> --output-path <path> [options]
 
 Required:
-  --input-dir <path>        Source DOCX directory
-  --primary-author <name>   Primary manuscript author
+  --template-path <path>    Template DOCX path
+  --input-dir <path>        Expert DOCX directory
   --output-path <path>      Output .docx file path
+
+Optional:
+  --gold-standard-csv <path>  Gold standard CSV path
+
+Deprecated:
+  --primary-author <name>   Ignored in V3; retained only for backward compatibility
 
 API key source options (choose one):
   --api-key <key>           Pass key directly (not recommended for shell history)
@@ -41,8 +60,10 @@ Other:
 function parseArgs(argv: string[]): CliOptions {
   const options: CliOptions = {
     inputDir: "",
-    primaryAuthor: "",
     outputPath: "",
+    templatePath: "",
+    goldStandardCsvPath: "",
+    primaryAuthor: "",
     apiKeyEnv: "GEMINI_API_KEY",
     help: false
   };
@@ -55,8 +76,18 @@ function parseArgs(argv: string[]): CliOptions {
       options.help = true;
       continue;
     }
+    if (arg === "--template-path" || arg === "-t") {
+      options.templatePath = next ?? "";
+      i += 1;
+      continue;
+    }
     if (arg === "--input-dir" || arg === "-i") {
       options.inputDir = next ?? "";
+      i += 1;
+      continue;
+    }
+    if (arg === "--gold-standard-csv" || arg === "-g") {
+      options.goldStandardCsvPath = next ?? "";
       i += 1;
       continue;
     }
@@ -109,9 +140,23 @@ function ensureDomParser() {
   Reflect.set(globalThis as object, "DOMParser", dom.window.DOMParser);
 }
 
-function buildClustersFromPrecluster(precluster: ReturnType<typeof buildPreclusters>) {
+async function readDocxAsFile(absPath: string) {
+  const buf = await fs.readFile(absPath);
+  return {
+    name: path.basename(absPath),
+    arrayBuffer: async () =>
+      buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
+  } as unknown as File;
+}
+
+function buildClustersFromPrecluster(
+  precluster: ReturnType<typeof buildPreclusters>,
+  templateOutline: TemplateOutline,
+  goldStandardTemplateIds: Set<string>
+) {
   const termMap = new Map(precluster.terms.map((term) => [term.term_key, term]));
   const clusters: ConceptCluster[] = [];
+  const matchedTemplateIds = new Set<string>();
 
   precluster.groups.forEach((group, index) => {
     const members = group.member_keys
@@ -133,18 +178,59 @@ function buildClustersFromPrecluster(precluster: ReturnType<typeof buildPreclust
         ? group.aliases
         : Array.from(new Set(members.map((member) => member.term_name)));
 
+    const candidateNames = [
+      aliases[0] ?? members[0].term_name,
+      ...(aliases ?? []),
+      firstTerm?.name_en ?? ""
+    ]
+      .map((value) => normalizeTemplateLookup(value))
+      .filter(Boolean);
+    const matchedTemplate = templateOutline.terms.find((term) => {
+      const cn = normalizeTemplateLookup(term.name_cn);
+      const en = normalizeTemplateLookup(term.name_en);
+      return candidateNames.some((name) => name === cn || (en && name === en));
+    });
+
+    if (matchedTemplate) {
+      matchedTemplateIds.add(matchedTemplate.template_term_id);
+    }
+
     clusters.push({
       cluster_id: `C${String(index + 1).padStart(3, "0")}`,
-      canonical_name_cn: aliases[0] ?? members[0].term_name,
-      canonical_name_en: firstTerm?.name_en ?? "",
+      canonical_name_cn: matchedTemplate?.name_cn ?? aliases[0] ?? members[0].term_name,
+      canonical_name_en: matchedTemplate?.name_en ?? firstTerm?.name_en ?? "",
       members,
       aliases,
-      is_orphan: members.length === 1,
+      is_orphan: !matchedTemplate && members.length === 1,
+      in_template_scope: Boolean(matchedTemplate),
+      template_term_id: matchedTemplate?.template_term_id,
+      gold_standard_term: matchedTemplate
+        ? goldStandardTemplateIds.has(matchedTemplate.template_term_id)
+        : false,
       mapping_type: "related",
       include_in_scope: true,
-      suggested_chapter: firstTerm?.chapter ?? ""
+      suggested_chapter: matchedTemplate?.chapter ?? firstTerm?.chapter ?? ""
     });
   });
+
+  templateOutline.terms
+    .filter((term) => !matchedTemplateIds.has(term.template_term_id))
+    .forEach((term, index) => {
+      clusters.push({
+        cluster_id: `TM${String(index + 1).padStart(3, "0")}`,
+        canonical_name_cn: term.name_cn,
+        canonical_name_en: term.name_en,
+        members: [],
+        aliases: [],
+        is_orphan: false,
+        in_template_scope: true,
+        template_term_id: term.template_term_id,
+        gold_standard_term: goldStandardTemplateIds.has(term.template_term_id),
+        mapping_type: undefined,
+        include_in_scope: true,
+        suggested_chapter: term.chapter
+      });
+    });
 
   return clusters;
 }
@@ -158,7 +244,8 @@ function buildAcceptAllDecisions(
   Object.values(mergeResults).forEach((result) => {
     decisions[result.cluster_id] = {
       cluster_id: result.cluster_id,
-      decision: "accept_merge",
+      decision:
+        result.definition_source === "gold_standard" ? "accept_gold_standard" : "accept_merge",
       final_text: result.merged_definition,
       final_segments: result.segments,
       timestamp
@@ -177,6 +264,32 @@ function printProgress(event: MergeProgressEvent) {
   }
 }
 
+function printCleaningSummary(
+  summary: Awaited<ReturnType<typeof autoResolvePendingImportBatchForCli>>["summary"]
+) {
+  console.log(
+    `[PIPELINE] cleaning docs=${summary.doc_count}, terms=${summary.term_count}, issues=${summary.issue_count}, blocking=${summary.blocking_issue_count}`
+  );
+  Object.entries(summary.issue_counts).forEach(([issueType, count]) => {
+    if (count > 0) {
+      console.log(`[PIPELINE] cleaning ${issueType}=${count}`);
+    }
+  });
+  summary.accepted_samples.forEach((sample) => {
+    console.log(
+      `[PIPELINE] cleaning sample ${sample.author}: ${sample.raw_name_cn} -> ${sample.cleaned_name_cn}`
+    );
+  });
+}
+
+function formatBlockingIssue(issue: DraftCleaningIssue) {
+  return `${issue.author}/${issue.file_name}/${issue.raw_term_id} ${issue.issue_type}: ${issue.raw_name_cn} | ${issue.reason}`;
+}
+
+function formatGoldBlockingIssue(issue: GoldStandardImportIssue) {
+  return `row=${issue.row_index} ${issue.issue_type}: ${issue.raw_term_name_cn || "（空）"} | ${issue.reason}`;
+}
+
 async function run() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -184,9 +297,13 @@ async function run() {
     return;
   }
 
-  if (!options.inputDir || !options.primaryAuthor || !options.outputPath) {
+  if (!options.templatePath || !options.inputDir || !options.outputPath) {
     printHelp();
-    throw new Error("Missing required args: --input-dir, --primary-author, --output-path");
+    throw new Error("Missing required args: --template-path, --input-dir, --output-path");
+  }
+
+  if (options.primaryAuthor) {
+    console.warn("[PIPELINE] --primary-author 已废弃，在 V3 中不再参与逻辑。");
   }
 
   const apiKey = await resolveApiKey(options);
@@ -199,6 +316,7 @@ async function run() {
   ensureDomParser();
 
   const inputDir = path.resolve(options.inputDir);
+  const templatePath = path.resolve(options.templatePath);
   const outputPath = path.resolve(options.outputPath);
   const fileNames = (await fs.readdir(inputDir))
     .filter((name) => name.endsWith(".docx"))
@@ -208,21 +326,63 @@ async function run() {
     throw new Error(`No .docx files found in ${inputDir}`);
   }
 
+  const templateFile = await readDocxAsFile(templatePath);
+  const { templateOutline } = await parseTemplateDocx(templateFile);
+  let goldStandardEntries: Awaited<
+    ReturnType<typeof autoResolvePendingGoldStandardImportForCli>
+  >["entries"] = [];
+
+  console.log(
+    `[PIPELINE] template chapters=${templateOutline.chapter_order.length}, terms=${templateOutline.terms.length}`
+  );
   console.log(`[PIPELINE] input docs=${fileNames.length}`);
-  const parsedDocs = [] as Awaited<ReturnType<typeof parseDocx>>[];
-  for (const fileName of fileNames) {
-    const abs = path.join(inputDir, fileName);
-    const buf = await fs.readFile(abs);
-    const file = {
-      name: fileName,
-      arrayBuffer: async () =>
-        buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
-    } as unknown as File;
-    parsedDocs.push(await parseDocx(file));
+
+  if (options.goldStandardCsvPath) {
+    const goldCsvPath = path.resolve(options.goldStandardCsvPath);
+    const goldCsvText = await fs.readFile(goldCsvPath, "utf-8");
+    const pendingGoldImport = buildPendingGoldStandardImportFromText({
+      text: goldCsvText,
+      fileName: path.basename(goldCsvPath),
+      templateOutline
+    });
+    const goldImportResult = autoResolvePendingGoldStandardImportForCli(
+      pendingGoldImport,
+      templateOutline
+    );
+    goldStandardEntries = goldImportResult.entries;
+    console.log(
+      `[PIPELINE] gold entries=${goldImportResult.entries.length}, issues=${goldImportResult.issues.length}, blocking=${goldImportResult.blocking_issues.length}`
+    );
+    if (goldImportResult.blocking_issues.length > 0) {
+      goldImportResult.blocking_issues.forEach((issue) => {
+        console.error(`[PIPELINE] gold blocked ${formatGoldBlockingIssue(issue)}`);
+      });
+      throw new Error("Gold standard CSV produced unresolved issues. Resolve them in Phase 1 first.");
+    }
   }
 
+  const inputFiles: File[] = [];
+  for (const fileName of fileNames) {
+    const file = await readDocxAsFile(path.join(inputDir, fileName));
+    inputFiles.push(file);
+  }
+
+  const importResult = await autoResolvePendingImportBatchForCli(inputFiles, templateOutline);
+  printCleaningSummary(importResult.summary);
+  if (importResult.blocking_issues.length > 0) {
+    importResult.blocking_issues.forEach((issue) => {
+      console.error(`[PIPELINE] cleaning blocked ${formatBlockingIssue(issue)}`);
+    });
+    throw new Error("Draft cleaning produced blocking issues. Resolve them in Phase 1 first.");
+  }
+  const parsedDocs = importResult.cleaned_docs;
+
   const precluster = buildPreclusters(parsedDocs);
-  const conceptClusters = buildClustersFromPrecluster(precluster);
+  const conceptClusters = buildClustersFromPrecluster(
+    precluster,
+    templateOutline,
+    new Set(goldStandardEntries.map((entry) => entry.template_term_id))
+  );
   if (conceptClusters.length === 0) {
     throw new Error("No concept clusters generated from precluster.");
   }
@@ -234,8 +394,9 @@ async function run() {
   const mergeResults = await runMergePipeline({
     apiKey,
     parsedDocs,
+    templateOutline,
     conceptClusters,
-    primaryAuthor: options.primaryAuthor,
+    goldStandardEntries,
     model: "gemini-3.1-pro-preview",
     intervalMs: 200,
     maxAttempts: 3,
@@ -247,7 +408,8 @@ async function run() {
   const decisions = buildAcceptAllDecisions(mergeResults);
   const docBuffer = await buildGbDocxBuffer({
     results,
-    decisions
+    decisions,
+    templateOutline
   });
 
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
@@ -258,10 +420,10 @@ async function run() {
   const empty = results.filter((item) => !item.merged_definition.trim()).length;
 
   console.log(`[PIPELINE] merge success=${success}, failed=${failed}, empty=${empty}`);
-  console.log(`[PIPELINE] output=${outputPath}`);
+  console.log(`[PIPELINE] written=${outputPath}`);
 }
 
 run().catch((error) => {
-  console.error("[PIPELINE] failed:", error instanceof Error ? error.message : String(error));
+  console.error("[PIPELINE] failed", error);
   process.exitCode = 1;
 });

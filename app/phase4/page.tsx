@@ -11,6 +11,15 @@ function finalText(result: MergeResult, decisionText?: string) {
   return decisionText || result.merged_definition || "（暂无内容）";
 }
 
+function decisionLabel(decision?: string) {
+  if (decision === "accept_gold_standard") return "采纳金标准";
+  if (decision === "accept_merge") return "采纳合并稿";
+  if (decision === "accept_source_original") return "采纳专家原文";
+  if (decision === "manual_edit") return "手动编辑";
+  if (decision === "defer") return "待议";
+  return "未决";
+}
+
 export default function Phase4Page() {
   const { state } = useAppContext();
   const [exporting, setExporting] = useState(false);
@@ -53,7 +62,11 @@ export default function Phase4Page() {
     return { total, pending, deferred };
   }, [rows, decisions]);
 
-  const canExport = stats.total > 0 && stats.pending === 0 && stats.deferred === 0;
+  const canExport =
+    Boolean(state.template_outline) &&
+    stats.total > 0 &&
+    stats.pending === 0 &&
+    stats.deferred === 0;
   const sourceSummary = useMemo(
     () => getSourceSummaryForPreview(rows.map((row) => row.result), decisions),
     [rows, decisions]
@@ -68,7 +81,8 @@ export default function Phase4Page() {
     try {
       await exportGbDocx({
         results: rows.map((row) => row.result),
-        decisions
+        decisions,
+        templateOutline: state.template_outline
       });
       setMessage("已生成并触发下载。");
     } catch (error) {
@@ -107,7 +121,7 @@ export default function Phase4Page() {
                     {row.termName}（{row.chapter}）
                   </p>
                   <p className="text-xs text-cfh-muted">
-                    决策：{decision?.decision ?? "未决"} / 状态：{row.result.status}
+                    决策：{decisionLabel(decision?.decision)} / 状态：{row.result.status}
                   </p>
                   <p className="mt-2 whitespace-pre-wrap text-sm text-cfh-ink">
                     {finalText(row.result, decision?.final_text)}

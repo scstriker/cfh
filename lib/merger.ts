@@ -1,15 +1,19 @@
 import { callGemini } from "@/lib/gemini";
+import { runQualityChecks } from "@/lib/postprocess";
 import {
   buildMergePrompt,
   MERGE_RESPONSE_SCHEMA,
   MERGE_SYSTEM_INSTRUCTION
 } from "@/lib/prompts";
+import { findTemplateTermForCluster } from "@/lib/templateParser";
 import type {
   ConceptCluster,
+  GoldStandardEntry,
   MergeResult,
   MergeSourceEntry,
   ParsedDoc,
-  Segment
+  Segment,
+  TemplateOutline
 } from "@/lib/types";
 
 const DEFAULT_MODEL = "gemini-3.1-pro-preview";
@@ -48,49 +52,100 @@ function getMergeSourceEntry(
 }
 
 interface MergeModelResponse {
-  dimensions: MergeResult["dimensions"];
-  segments: MergeResult["segments"];
-  notes: string;
+  dimensions?: MergeResult["dimensions"];
+  segments?: MergeResult["segments"];
+  notes?: string;
+  excluded_sources?: MergeResult["excluded_sources"];
+  reference_items?: string[];
 }
 
-function fallbackSegments(primaryTerm?: MergeSourceEntry, sourceEntries: MergeSourceEntry[] = []) {
-  const fallback = primaryTerm?.definition || sourceEntries.find((item) => item.has_definition)?.definition || "";
-  if (!fallback) {
+function fallbackSegments(sourceEntries: MergeSourceEntry[] = []) {
+  const firstDefined = sourceEntries.find((item) => item.has_definition);
+  if (!firstDefined?.definition) {
     return [] as Segment[];
   }
   return [
     {
-      text: fallback,
-      source: primaryTerm?.author || sourceEntries.find((item) => item.has_definition)?.author || "未知来源"
+      text: firstDefined.definition,
+      source: firstDefined.author
     }
   ];
 }
 
+function findGoldStandardEntry(
+  cluster: ConceptCluster,
+  templateOutline: TemplateOutline,
+  goldStandardEntries: GoldStandardEntry[]
+) {
+  const templateTerm = findTemplateTermForCluster(templateOutline, cluster);
+  const templateTermId = cluster.template_term_id ?? templateTerm?.template_term_id;
+  if (!templateTermId) {
+    return undefined;
+  }
+  return goldStandardEntries.find((entry) => entry.template_term_id === templateTermId);
+}
+
 function createResult(params: {
   cluster: ConceptCluster;
+  templateOutline: TemplateOutline;
   sourceEntries: MergeSourceEntry[];
-  primaryTerm?: MergeSourceEntry;
+  definitionSource: MergeResult["definition_source"];
   dimensions?: MergeResult["dimensions"];
   segments?: MergeResult["segments"];
   notes?: string;
+  excludedSources?: MergeResult["excluded_sources"];
+  referenceItems?: string[];
+  mergedDefinitionOverride?: string;
+  qualityFlagsOverride?: MergeResult["quality_flags"];
   status: MergeResult["status"];
 }): MergeResult {
-  const { cluster, sourceEntries, primaryTerm, dimensions = [], notes = "", status } = params;
-  const segments = params.segments ?? fallbackSegments(primaryTerm, sourceEntries);
-  const mergedDefinition = segments.map((segment) => segment.text).join("").trim();
+  const {
+    cluster,
+    templateOutline,
+    sourceEntries,
+    definitionSource,
+    dimensions = [],
+    notes = "",
+    excludedSources = [],
+    referenceItems = [],
+    mergedDefinitionOverride,
+    qualityFlagsOverride,
+    status
+  } = params;
+  const templateTerm = findTemplateTermForCluster(templateOutline, cluster);
+  const segments = params.segments ?? fallbackSegments(sourceEntries);
+  const mergedDefinition =
+    mergedDefinitionOverride ?? segments.map((segment) => segment.text).join("").trim();
+  const qualityFlags =
+    qualityFlagsOverride ??
+    (mergedDefinition && mergedDefinition !== "待补充"
+      ? runQualityChecks({
+          termNameCn: cluster.canonical_name_cn || templateTerm?.name_cn || "",
+          termNameEn: cluster.canonical_name_en || templateTerm?.name_en || "",
+          mergedDefinition
+        })
+      : []);
 
   return {
     cluster_id: cluster.cluster_id,
-    term_name_cn: cluster.canonical_name_cn || cluster.members[0]?.term_name || cluster.cluster_id,
-    term_name_en: cluster.canonical_name_en || "",
+    template_term_id: cluster.template_term_id ?? templateTerm?.template_term_id,
+    in_template_scope: cluster.in_template_scope,
+    definition_source: definitionSource,
+    term_name_cn: cluster.canonical_name_cn || templateTerm?.name_cn || cluster.members[0]?.term_name || cluster.cluster_id,
+    term_name_en: cluster.canonical_name_en || templateTerm?.name_en || "",
     chapter:
-      primaryTerm?.chapter || sourceEntries.find((item) => item.has_definition)?.chapter || cluster.suggested_chapter || "未分类",
+      templateTerm?.chapter ||
+      cluster.suggested_chapter ||
+      sourceEntries.find((item) => item.has_definition)?.chapter ||
+      "未分类",
     source_entries: sourceEntries,
-    primary_term: primaryTerm,
     dimensions,
     merged_definition: mergedDefinition,
     segments,
     notes,
+    excluded_sources: excludedSources,
+    quality_flags: qualityFlags,
+    reference_items: referenceItems,
     status
   };
 }
@@ -109,8 +164,9 @@ export interface MergeProgressEvent {
 interface RunMergerParams {
   apiKey: string;
   parsedDocs: ParsedDoc[];
+  templateOutline: TemplateOutline;
   conceptClusters: ConceptCluster[];
-  primaryAuthor: string;
+  goldStandardEntries?: GoldStandardEntry[];
   model?: string;
   intervalMs?: number;
   maxAttempts?: number;
@@ -121,8 +177,9 @@ interface RunMergerParams {
 export async function runMergePipeline({
   apiKey,
   parsedDocs,
+  templateOutline,
   conceptClusters,
-  primaryAuthor,
+  goldStandardEntries = [],
   model = DEFAULT_MODEL,
   intervalMs = 500,
   maxAttempts = 3,
@@ -143,7 +200,10 @@ export async function runMergePipeline({
       await sleep(intervalMs);
     }
 
-    const termNameCn = cluster.canonical_name_cn || cluster.members[0]?.term_name || cluster.cluster_id;
+    const templateTerm = findTemplateTermForCluster(templateOutline, cluster);
+    const termNameCn =
+      cluster.canonical_name_cn || templateTerm?.name_cn || cluster.members[0]?.term_name || cluster.cluster_id;
+
     onProgress?.({
       total,
       completed,
@@ -158,22 +218,43 @@ export async function runMergePipeline({
     const sourceEntries = cluster.members.map((member) =>
       getMergeSourceEntry(cluster, member, parsedDocs)
     );
-    const primaryTerm = sourceEntries.find((entry) => entry.author === primaryAuthor);
-    const definedCount = sourceEntries.filter((entry) => entry.has_definition).length;
-    const hasPrimaryDefinition = Boolean(primaryTerm?.has_definition);
-    const hasOtherDefinition = sourceEntries.some(
-      (entry) => entry.author !== primaryAuthor && entry.has_definition
+    const definedEntries = sourceEntries.filter((entry) => entry.has_definition);
+    const goldStandardEntry = findGoldStandardEntry(
+      cluster,
+      templateOutline,
+      goldStandardEntries
     );
 
-    if (hasPrimaryDefinition && !hasOtherDefinition) {
-      const result = createResult({
-        cluster,
+    if (goldStandardEntry) {
+      const goldResult = createResult({
+        cluster: { ...cluster, gold_standard_term: true },
+        templateOutline,
         sourceEntries,
-        primaryTerm,
-        notes: "仅主稿有定义，直接采用主稿原文。",
+        definitionSource: "gold_standard",
+        segments: [
+          {
+            text: goldStandardEntry.standard_definition,
+            source: "金标准"
+          }
+        ],
+        mergedDefinitionOverride: goldStandardEntry.standard_definition,
+        notes: [
+          `金标准来源：${goldStandardEntry.source_doc}。`,
+          "该词条正文由金标准锁定，专家原文仅作差异对照。",
+          goldStandardEntry.notes ?? ""
+        ]
+          .filter(Boolean)
+          .join(" "),
+        referenceItems: [
+          `金标准来源：${goldStandardEntry.source_doc}`,
+          ...(goldStandardEntry.source_excerpt
+            ? [`来源摘录：${goldStandardEntry.source_excerpt}`]
+            : [])
+        ],
+        qualityFlagsOverride: goldStandardEntry.quality_flags,
         status: "ai_merged"
       });
-      results[cluster.cluster_id] = result;
+      results[cluster.cluster_id] = goldResult;
       completed += 1;
       success += 1;
       onProgress?.({
@@ -184,17 +265,21 @@ export async function runMergePipeline({
         cluster_id: cluster.cluster_id,
         term_name_cn: termNameCn,
         status: "success",
-        message: `${termNameCn} 完成（仅主稿有定义）`
+        message: `${termNameCn} 完成（金标准覆盖）`
       });
       continue;
     }
 
-    if (definedCount === 0) {
+    if (definedEntries.length === 0) {
       const failedResult = createResult({
         cluster,
+        templateOutline,
         sourceEntries,
-        primaryTerm,
-        notes: "所有来源均无有效定义，标记为人工处理。",
+        definitionSource: "missing",
+        mergedDefinitionOverride: cluster.in_template_scope ? "待补充" : "",
+        notes: cluster.in_template_scope
+          ? "模板内词条暂无专家定义，标记为待补充。"
+          : "模板外词条暂无可用定义，标记为人工处理。",
         status: "ai_failed"
       });
       results[cluster.cluster_id] = failedResult;
@@ -213,13 +298,20 @@ export async function runMergePipeline({
       continue;
     }
 
-    if (definedCount === 1) {
-      const onlyDefined = sourceEntries.find((entry) => entry.has_definition);
+    if (definedEntries.length === 1) {
+      const [onlyDefined] = definedEntries;
       const result = createResult({
         cluster,
+        templateOutline,
         sourceEntries,
-        primaryTerm: primaryTerm ?? onlyDefined,
-        notes: `仅 ${onlyDefined?.author ?? "单一来源"} 有定义，直接采用该来源原文。`,
+        definitionSource: "single_expert",
+        segments: [
+          {
+            text: onlyDefined.definition,
+            source: onlyDefined.author
+          }
+        ],
+        notes: `仅 ${onlyDefined.author} 有定义，直接采用该来源原文并执行质量检查。`,
         status: "ai_merged"
       });
       results[cluster.cluster_id] = result;
@@ -262,7 +354,7 @@ export async function runMergePipeline({
           clusterId: cluster.cluster_id,
           canonicalNameCn: cluster.canonical_name_cn,
           canonicalNameEn: cluster.canonical_name_en,
-          primaryAuthor,
+          templateTerm,
           terms: sourceEntries
         });
 
@@ -280,11 +372,14 @@ export async function runMergePipeline({
 
         mergedResult = createResult({
           cluster,
+          templateOutline,
           sourceEntries,
-          primaryTerm,
+          definitionSource: "expert_merge",
           dimensions: Array.isArray(response.dimensions) ? response.dimensions : [],
           segments: Array.isArray(response.segments) ? response.segments : [],
           notes: response.notes ?? "",
+          excludedSources: Array.isArray(response.excluded_sources) ? response.excluded_sources : [],
+          referenceItems: Array.isArray(response.reference_items) ? response.reference_items : [],
           status: "ai_merged"
         });
         break;
@@ -321,8 +416,9 @@ export async function runMergePipeline({
       console.error("合并失败：", cluster.cluster_id, lastError);
       results[cluster.cluster_id] = createResult({
         cluster,
+        templateOutline,
         sourceEntries,
-        primaryTerm,
+        definitionSource: "expert_merge",
         notes: "AI 多次调用失败，需人工处理。",
         status: "ai_failed"
       });

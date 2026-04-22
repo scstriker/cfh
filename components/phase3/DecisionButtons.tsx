@@ -1,42 +1,84 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "@/components/ui/Button";
 import { Modal } from "@/components/ui/Modal";
 
+interface SourceOption {
+  author: string;
+  text: string;
+}
+
 interface DecisionButtonsProps {
+  acceptLabel?: string;
   mergedText: string;
-  primaryText: string;
-  canUsePrimary: boolean;
+  sourceOptions: SourceOption[];
   onAcceptMerge: () => void;
-  onAcceptPrimary: () => void;
+  onAcceptSourceOriginal: (author: string) => void;
   onDefer: () => void;
   onManualSave: (text: string) => void;
+  showSourceOriginalAction?: boolean;
 }
 
 export function DecisionButtons({
+  acceptLabel = "采纳合并稿",
   mergedText,
-  primaryText,
-  canUsePrimary,
+  sourceOptions,
   onAcceptMerge,
-  onAcceptPrimary,
+  onAcceptSourceOriginal,
   onDefer,
-  onManualSave
+  onManualSave,
+  showSourceOriginalAction = true
 }: DecisionButtonsProps) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
+  const [selectedSourceAuthor, setSelectedSourceAuthor] = useState(sourceOptions[0]?.author ?? "");
 
-  const initialDraft = useMemo(() => mergedText || primaryText || "", [mergedText, primaryText]);
+  useEffect(() => {
+    if (sourceOptions.some((option) => option.author === selectedSourceAuthor)) {
+      return;
+    }
+    setSelectedSourceAuthor(sourceOptions[0]?.author ?? "");
+  }, [selectedSourceAuthor, sourceOptions]);
+
+  const initialDraft = useMemo(
+    () => mergedText || sourceOptions[0]?.text || "",
+    [mergedText, sourceOptions]
+  );
 
   return (
     <>
       <div className="flex flex-wrap gap-2">
         <Button onClick={onAcceptMerge} type="button">
-          采纳合并稿
+          {acceptLabel}
         </Button>
-        <Button disabled={!canUsePrimary} onClick={onAcceptPrimary} type="button" variant="secondary">
-          采纳主稿原文
-        </Button>
+        {showSourceOriginalAction ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              className="rounded-md border border-slate-200 bg-white px-2 py-2 text-sm text-cfh-ink"
+              onChange={(event) => setSelectedSourceAuthor(event.target.value)}
+              value={selectedSourceAuthor}
+            >
+              {sourceOptions.length === 0 ? (
+                <option value="">无可采纳原文</option>
+              ) : (
+                sourceOptions.map((option) => (
+                  <option key={option.author} value={option.author}>
+                    {option.author}
+                  </option>
+                ))
+              )}
+            </select>
+            <Button
+              disabled={!selectedSourceAuthor}
+              onClick={() => onAcceptSourceOriginal(selectedSourceAuthor)}
+              type="button"
+              variant="secondary"
+            >
+              采纳指定专家原文
+            </Button>
+          </div>
+        ) : null}
         <Button
           onClick={() => {
             setDraft(initialDraft);

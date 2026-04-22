@@ -12,7 +12,12 @@ import {
   TextRun,
   WidthType
 } from "docx";
-import type { MergeResult, ReviewDecision, Segment } from "@/lib/types";
+import type {
+  MergeResult,
+  ReviewDecision,
+  Segment,
+  TemplateOutline
+} from "@/lib/types";
 
 const SOURCE_COLORS: Record<string, string> = {
   宋凤麒: "BDD7EE",
@@ -23,6 +28,16 @@ const SOURCE_COLORS: Record<string, string> = {
   曹坤: "D0E0E3",
   柴智敏: "F4C2C2",
   陈磊: "FFF2CC"
+};
+
+const QUALITY_FLAG_LABELS: Record<string, string> = {
+  sentence_form: "句式不完整",
+  logic_order: "逻辑顺序可疑",
+  circular_definition: "循环定义",
+  too_long: "定义过长",
+  clause_too_long: "从句过长",
+  abbreviation: "含未展开缩写",
+  grammar: "疑似病句"
 };
 
 function bodyRun(text: string) {
@@ -98,6 +113,14 @@ function buildSourceSummary(results: MergeResult[], decisions: Record<string, Re
     .sort((a, b) => b.count - a.count);
 }
 
+function buildReferenceSummary(results: MergeResult[]) {
+  const refs = new Set<string>();
+  results.forEach((result) => {
+    result.reference_items.forEach((item) => refs.add(item));
+  });
+  return Array.from(refs.values()).sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+}
+
 function sourceSummaryTable(rows: Array<{ source: string; count: number }>) {
   return new Table({
     width: {
@@ -132,15 +155,95 @@ function sourceSummaryTable(rows: Array<{ source: string; count: number }>) {
   });
 }
 
+function qualityTable(rows: Array<{ termName: string; flags: string[] }>) {
+  return new Table({
+    width: {
+      size: 100,
+      type: WidthType.PERCENTAGE
+    },
+    rows: [
+      new TableRow({
+        children: [
+          new TableCell({
+            children: [new Paragraph({ children: [bodyRun("术语")] })]
+          }),
+          new TableCell({
+            children: [new Paragraph({ children: [bodyRun("质量提示")] })]
+          })
+        ]
+      }),
+      ...rows.map(
+        (row) =>
+          new TableRow({
+            children: [
+              new TableCell({
+                children: [new Paragraph({ children: [bodyRun(row.termName)] })]
+              }),
+              new TableCell({
+                children: [
+                  new Paragraph({
+                    children: [bodyRun(row.flags.map((flag) => QUALITY_FLAG_LABELS[flag] ?? flag).join("、"))]
+                  })
+                ]
+              })
+            ]
+          })
+      )
+    ]
+  });
+}
+
+function sortResultsForExport(results: MergeResult[], templateOutline: TemplateOutline | null) {
+  if (!templateOutline) {
+    return [...results].sort((a, b) => a.chapter.localeCompare(b.chapter, "zh-Hans-CN"));
+  }
+
+  const chapterIndex = new Map(
+    templateOutline.chapter_order.map((chapter, index) => [chapter, index])
+  );
+  const termIndex = new Map(
+    templateOutline.terms.map((term, index) => [term.template_term_id, index])
+  );
+
+  return [...results].sort((a, b) => {
+    const chapterA = chapterIndex.get(a.chapter) ?? Number.MAX_SAFE_INTEGER;
+    const chapterB = chapterIndex.get(b.chapter) ?? Number.MAX_SAFE_INTEGER;
+    if (chapterA !== chapterB) {
+      return chapterA - chapterB;
+    }
+
+    const aInTemplate = Boolean(a.template_term_id);
+    const bInTemplate = Boolean(b.template_term_id);
+    if (aInTemplate && bInTemplate) {
+      return (
+        (termIndex.get(a.template_term_id ?? "") ?? Number.MAX_SAFE_INTEGER) -
+        (termIndex.get(b.template_term_id ?? "") ?? Number.MAX_SAFE_INTEGER)
+      );
+    }
+    if (aInTemplate && !bInTemplate) return -1;
+    if (!aInTemplate && bInTemplate) return 1;
+
+    return a.term_name_cn.localeCompare(b.term_name_cn, "zh-Hans-CN");
+  });
+}
+
 export interface ExportDocxParams {
   results: MergeResult[];
   decisions: Record<string, ReviewDecision>;
+  templateOutline: TemplateOutline | null;
   fileName?: string;
 }
 
-function buildGbDocxDocument({ results, decisions }: ExportDocxParams) {
-  const ordered = [...results].sort((a, b) => a.chapter.localeCompare(b.chapter, "zh-Hans-CN"));
+function buildGbDocxDocument({ results, decisions, templateOutline }: ExportDocxParams) {
+  const ordered = sortResultsForExport(results, templateOutline);
   const summaryRows = buildSourceSummary(ordered, decisions);
+  const referenceRows = buildReferenceSummary(ordered);
+  const qualityRows = ordered
+    .filter((result) => result.quality_flags.length > 0)
+    .map((result) => ({
+      termName: result.term_name_cn,
+      flags: result.quality_flags
+    }));
 
   const content: Array<Paragraph | Table> = [
     new Paragraph({
@@ -199,6 +302,17 @@ function buildGbDocxDocument({ results, decisions }: ExportDocxParams) {
     );
   });
 
+  if (qualityRows.length > 0) {
+    content.push(
+      new Paragraph({
+        heading: HeadingLevel.HEADING_1,
+        spacing: { before: 360, after: 120 },
+        children: [headingRun("质量提示")]
+      }),
+      qualityTable(qualityRows)
+    );
+  }
+
   content.push(
     new Paragraph({
       heading: HeadingLevel.HEADING_1,
@@ -206,8 +320,16 @@ function buildGbDocxDocument({ results, decisions }: ExportDocxParams) {
       children: [headingRun("参考文献")]
     }),
     new Paragraph({
-      children: [bodyRun("本稿依据 8 位专家术语草案及审阅决策自动生成。")]
+      children: [bodyRun("本稿依据模板骨架、专家术语草案及审阅决策自动生成。")]
     }),
+    ...(referenceRows.length > 0
+      ? referenceRows.map(
+          (item) =>
+            new Paragraph({
+              children: [bodyRun(item)]
+            })
+        )
+      : []),
     new Paragraph({
       heading: HeadingLevel.HEADING_2,
       spacing: { before: 240, after: 120 },

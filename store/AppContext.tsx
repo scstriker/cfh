@@ -12,7 +12,7 @@ import {
 import type { AppState } from "@/lib/types";
 import { appReducer, initialState, type Action } from "@/store/reducer";
 
-const REVIEW_STORAGE_KEY = "cfh_review_state_v1";
+const REVIEW_STORAGE_KEY = "cfh_review_state_v3";
 
 interface AppContextValue {
   state: AppState;

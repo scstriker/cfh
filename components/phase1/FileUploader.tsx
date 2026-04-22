@@ -5,7 +5,12 @@ import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 
 interface FileUploaderProps {
+  accept?: string;
   disabled?: boolean;
+  description?: string;
+  filterFiles?: (files: File[]) => File[];
+  multiple?: boolean;
+  title?: string;
   onFilesSelected: (files: File[]) => void;
 }
 
@@ -13,7 +18,15 @@ function filterDocx(files: File[]) {
   return files.filter((file) => file.name.toLowerCase().endsWith(".docx"));
 }
 
-export function FileUploader({ disabled = false, onFilesSelected }: FileUploaderProps) {
+export function FileUploader({
+  accept = ".docx",
+  disabled = false,
+  description = "拖拽 `.docx` 文件到此处，或点击按钮选择文件（支持多选）。",
+  filterFiles = filterDocx,
+  multiple = true,
+  title = "上传 DOCX 草案",
+  onFilesSelected
+}: FileUploaderProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
@@ -21,14 +34,14 @@ export function FileUploader({ disabled = false, onFilesSelected }: FileUploader
     if (!files) {
       return;
     }
-    const docxFiles = filterDocx(Array.from(files));
-    if (docxFiles.length > 0) {
-      onFilesSelected(docxFiles);
+    const pickedFiles = filterFiles(Array.from(files));
+    if (pickedFiles.length > 0) {
+      onFilesSelected(pickedFiles);
     }
   };
 
   return (
-    <Card title="上传 DOCX 草案">
+    <Card title={title}>
       <div
         className={[
           "rounded-lg border border-dashed p-6 text-center transition",
@@ -46,17 +59,15 @@ export function FileUploader({ disabled = false, onFilesSelected }: FileUploader
           handlePick(event.dataTransfer.files);
         }}
       >
-        <p className="mb-3 text-sm text-cfh-muted">
-          拖拽 `.docx` 文件到此处，或点击按钮选择文件（支持多选）。
-        </p>
+        <p className="mb-3 text-sm text-cfh-muted">{description}</p>
         <Button onClick={() => inputRef.current?.click()} type="button" variant="secondary">
           选择文件
         </Button>
         <input
           ref={inputRef}
-          accept=".docx"
+          accept={accept}
           className="hidden"
-          multiple
+          multiple={multiple}
           onChange={(event) => handlePick(event.target.files)}
           type="file"
         />

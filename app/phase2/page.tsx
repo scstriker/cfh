@@ -41,8 +41,8 @@ export default function Phase2Page() {
       setError("请先输入 Gemini API Key。");
       return;
     }
-    if (!state.primary_author.trim()) {
-      setError("请先在阶段一设置主稿作者。");
+    if (!state.template_outline) {
+      setError("请先在阶段一上传模板骨架。");
       return;
     }
     if (state.concept_clusters.length === 0) {
@@ -57,15 +57,16 @@ export default function Phase2Page() {
     appendLog("开始逐概念簇 AI 合并。");
 
     try {
-      const results = await runMergePipeline({
-        apiKey: state.api_key,
-        parsedDocs: state.parsed_docs,
-        conceptClusters: state.concept_clusters,
-        primaryAuthor: state.primary_author,
-        model: "gemini-3.1-pro-preview",
-        onProgress: (progressEvent) => {
-          setEvent(progressEvent);
-          appendLog(progressEvent.message);
+          const results = await runMergePipeline({
+            apiKey: state.api_key,
+            parsedDocs: state.parsed_docs,
+            templateOutline: state.template_outline,
+            conceptClusters: state.concept_clusters,
+            goldStandardEntries: state.gold_standard_entries,
+            model: "gemini-3.1-pro-preview",
+            onProgress: (progressEvent) => {
+              setEvent(progressEvent);
+              appendLog(progressEvent.message);
         }
       });
 

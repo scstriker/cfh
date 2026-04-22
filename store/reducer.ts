@@ -1,18 +1,25 @@
 import type {
   AppState,
   ConceptCluster,
+  GoldStandardDoc,
+  GoldStandardEntry,
   MergeResult,
   ParsedDoc,
   PhaseId,
-  ReviewDecision
+  ReviewDecision,
+  TemplateDoc,
+  TemplateOutline
 } from "@/lib/types";
 
 export const initialState: AppState = {
   parsed_docs: [],
+  template_doc: null,
+  template_outline: null,
+  gold_standard_doc: null,
+  gold_standard_entries: [],
   concept_clusters: [],
   merge_results: {},
   review_decisions: {},
-  primary_author: "",
   api_key: "",
   current_phase: "phase1",
   phase0_locked: false
@@ -20,9 +27,22 @@ export const initialState: AppState = {
 
 export type Action =
   | { type: "SET_API_KEY"; payload: string }
-  | { type: "SET_PRIMARY_AUTHOR"; payload: string }
   | { type: "SET_CURRENT_PHASE"; payload: PhaseId }
   | { type: "SET_PHASE0_LOCKED"; payload: boolean }
+  | {
+      type: "SET_TEMPLATE_DATA";
+      payload: {
+        template_doc: TemplateDoc;
+        template_outline: TemplateOutline;
+      } | null;
+    }
+  | {
+      type: "SET_GOLD_STANDARD_DATA";
+      payload: {
+        gold_standard_doc: GoldStandardDoc;
+        gold_standard_entries: GoldStandardEntry[];
+      } | null;
+    }
   | { type: "SET_PARSED_DOCS"; payload: ParsedDoc[] }
   | { type: "UPSERT_PARSED_DOC"; payload: ParsedDoc }
   | { type: "SET_CONCEPT_CLUSTERS"; payload: ConceptCluster[] }
@@ -42,14 +62,41 @@ export function appReducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case "SET_API_KEY":
       return { ...state, api_key: action.payload };
-    case "SET_PRIMARY_AUTHOR":
-      return { ...state, primary_author: action.payload };
     case "SET_CURRENT_PHASE":
       return { ...state, current_phase: action.payload };
     case "SET_PHASE0_LOCKED":
       return { ...state, phase0_locked: action.payload };
+    case "SET_TEMPLATE_DATA":
+      return {
+        ...state,
+        template_doc: action.payload?.template_doc ?? null,
+        template_outline: action.payload?.template_outline ?? null,
+        gold_standard_doc: null,
+        gold_standard_entries: [],
+        concept_clusters: [],
+        merge_results: {},
+        review_decisions: {},
+        phase0_locked: false
+      };
+    case "SET_GOLD_STANDARD_DATA":
+      return {
+        ...state,
+        gold_standard_doc: action.payload?.gold_standard_doc ?? null,
+        gold_standard_entries: action.payload?.gold_standard_entries ?? [],
+        concept_clusters: [],
+        merge_results: {},
+        review_decisions: {},
+        phase0_locked: false
+      };
     case "SET_PARSED_DOCS":
-      return { ...state, parsed_docs: action.payload };
+      return {
+        ...state,
+        parsed_docs: action.payload,
+        concept_clusters: [],
+        merge_results: {},
+        review_decisions: {},
+        phase0_locked: false
+      };
     case "UPSERT_PARSED_DOC": {
       const existingIndex = state.parsed_docs.findIndex(
         (doc) => doc.id === action.payload.id
@@ -64,7 +111,12 @@ export function appReducer(state: AppState, action: Action): AppState {
       return { ...state, parsed_docs: nextDocs };
     }
     case "SET_CONCEPT_CLUSTERS":
-      return { ...state, concept_clusters: action.payload };
+      return {
+        ...state,
+        concept_clusters: action.payload,
+        merge_results: {},
+        review_decisions: {}
+      };
     case "SET_MERGE_RESULTS":
       return { ...state, merge_results: action.payload };
     case "UPSERT_MERGE_RESULT":

@@ -68,7 +68,13 @@ export default function Phase3Page() {
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0], "zh-Hans-CN"));
   }, [results]);
 
-  const commitDecision = (clusterId: string, decision: ReviewDecision["decision"], finalText: string, finalSegments: Segment[]) => {
+  const commitDecision = (
+    clusterId: string,
+    decision: ReviewDecision["decision"],
+    finalText: string,
+    finalSegments: Segment[],
+    selectedSourceAuthor?: string
+  ) => {
     dispatch({
       type: "SET_REVIEW_DECISION",
       payload: {
@@ -76,6 +82,7 @@ export default function Phase3Page() {
         decision,
         final_text: finalText,
         final_segments: finalSegments,
+        selected_source_author: selectedSourceAuthor,
         timestamp: new Date().toISOString()
       }
     });
@@ -95,18 +102,28 @@ export default function Phase3Page() {
   const handleAcceptMerge = (clusterId: string) => {
     const result = state.merge_results[clusterId];
     if (!result) return;
-    commitDecision(clusterId, "accept_merge", result.merged_definition, result.segments);
+    commitDecision(
+      clusterId,
+      result.definition_source === "gold_standard" ? "accept_gold_standard" : "accept_merge",
+      result.merged_definition,
+      result.segments
+    );
   };
 
-  const handleAcceptPrimary = (clusterId: string) => {
+  const handleAcceptSourceOriginal = (clusterId: string, author: string) => {
     const result = state.merge_results[clusterId];
     if (!result) return;
-    const text =
-      result.primary_term?.definition ||
-      result.source_entries.find((entry) => entry.has_definition)?.definition ||
-      "";
-    const source = result.primary_term?.author || state.primary_author || "主稿";
-    commitDecision(clusterId, "accept_primary", text, buildSegmentsFromText(text, source));
+    const sourceEntry = result.source_entries.find(
+      (entry) => entry.author === author && entry.has_definition
+    );
+    if (!sourceEntry) return;
+    commitDecision(
+      clusterId,
+      "accept_source_original",
+      sourceEntry.definition,
+      buildSegmentsFromText(sourceEntry.definition, sourceEntry.author),
+      sourceEntry.author
+    );
   };
 
   const handleManualSave = (clusterId: string, text: string) => {
@@ -166,11 +183,17 @@ export default function Phase3Page() {
                 key={cluster.cluster_id}
                 cluster={cluster}
                 decision={state.review_decisions[cluster.cluster_id]}
+                goldEntry={
+                  result.template_term_id
+                    ? state.gold_standard_entries.find(
+                        (entry) => entry.template_term_id === result.template_term_id
+                      )
+                    : undefined
+                }
                 onAcceptMerge={handleAcceptMerge}
-                onAcceptPrimary={handleAcceptPrimary}
+                onAcceptSourceOriginal={handleAcceptSourceOriginal}
                 onDefer={handleDefer}
                 onManualSave={handleManualSave}
-                primaryAuthor={state.primary_author}
                 result={result}
               />
             ))}

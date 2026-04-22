@@ -3,17 +3,16 @@ import { Badge } from "@/components/ui/Badge";
 
 interface SourceComparisonProps {
   sourceEntries: MergeSourceEntry[];
-  primaryAuthor: string;
 }
 
-export function SourceComparison({ sourceEntries, primaryAuthor }: SourceComparisonProps) {
+export function SourceComparison({ sourceEntries }: SourceComparisonProps) {
   if (!sourceEntries.length) {
     return <p className="text-xs text-cfh-muted">暂无原文来源。</p>;
   }
 
   const sorted = [...sourceEntries].sort((a, b) => {
-    if (a.author === primaryAuthor) return -1;
-    if (b.author === primaryAuthor) return 1;
+    if (a.has_definition && !b.has_definition) return -1;
+    if (!a.has_definition && b.has_definition) return 1;
     return a.author.localeCompare(b.author, "zh-Hans-CN");
   });
 
@@ -26,7 +25,6 @@ export function SourceComparison({ sourceEntries, primaryAuthor }: SourceCompari
               {entry.author} / {entry.term_id} / {entry.term_name_cn}
             </span>
             <span>
-              {entry.author === primaryAuthor ? <Badge tone="neutral">主稿</Badge> : null}
               {entry.has_definition ? (
                 <Badge tone="success">有定义</Badge>
               ) : (

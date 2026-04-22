@@ -9,7 +9,8 @@ const navItems = [
   { href: "/phase1", label: "阶段一：文档解析" },
   { href: "/phase2", label: "阶段二：AI 合并" },
   { href: "/phase3", label: "阶段三：卡片审阅" },
-  { href: "/phase4", label: "阶段四：导出文档" }
+  { href: "/phase4", label: "阶段四：导出文档" },
+  { href: "/tools/gold-standard-converter", label: "工具：金标准转换" }
 ];
 
 export function Sidebar() {

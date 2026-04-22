@@ -6,7 +6,12 @@ const phaseCards = [
   { href: "/phase1", title: "阶段一：文档解析", desc: "导入 DOCX、抽取术语条目并形成覆盖矩阵。" },
   { href: "/phase2", title: "阶段二：AI 合并", desc: "逐概念簇调用 Gemini，生成合并建议稿。" },
   { href: "/phase3", title: "阶段三：卡片审阅", desc: "专家逐条审阅并给出最终决策。" },
-  { href: "/phase4", title: "阶段四：导出文档", desc: "按 GB/T 模板导出可提交的 .docx 文档。" }
+  { href: "/phase4", title: "阶段四：导出文档", desc: "按 GB/T 模板导出可提交的 .docx 文档。" },
+  {
+    href: "/tools/gold-standard-converter",
+    title: "工具：金标准转换",
+    desc: "将百问百答等说明性材料转换为可导入的金标准 CSV。"
+  }
 ];
 
 export default function HomePage() {

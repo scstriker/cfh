@@ -16,32 +16,89 @@ import {
   ALIGNMENT_SYSTEM_INSTRUCTION,
   type AlignmentResponse
 } from "@/lib/prompts";
-import type { ConceptCluster, MappingType } from "@/lib/types";
+import type { ConceptCluster, MappingType, TemplateOutline } from "@/lib/types";
+import {
+  findTemplateTermById,
+  findTemplateTermForCluster
+} from "@/lib/templateParser";
 import { useAppContext } from "@/store/AppContext";
 
-function normalizeClusters(payload: AlignmentResponse): ConceptCluster[] {
-  return (payload.concept_clusters ?? []).map((cluster, index) => ({
-    cluster_id: cluster.cluster_id || `C${String(index + 1).padStart(3, "0")}`,
-    canonical_name_cn: cluster.canonical_name_cn ?? "",
-    canonical_name_en: cluster.canonical_name_en ?? "",
-    members: cluster.members ?? [],
-    aliases:
-      cluster.aliases && cluster.aliases.length > 0
-        ? cluster.aliases
-        : Array.from(new Set((cluster.members ?? []).map((member) => member.term_name))).filter(
-            (name) => name.trim().length > 0
-          ),
-    is_orphan: Boolean(cluster.is_orphan),
-    confidence:
-      typeof cluster.confidence === "number"
-        ? Math.max(0, Math.min(1, cluster.confidence))
-        : undefined,
-    rationale: cluster.rationale ?? "",
-    mapping_type: normalizeMappingType(cluster.mapping_type),
-    include_in_scope: true,
-    suggested_chapter: cluster.suggested_chapter ?? "",
-    mounting_reason: cluster.mounting_reason ?? ""
-  }));
+function normalizeClusters(
+  payload: AlignmentResponse,
+  templateOutline: TemplateOutline,
+  goldStandardTemplateIds: Set<string>
+): ConceptCluster[] {
+  const normalized = (payload.concept_clusters ?? []).map((cluster, index) => {
+    const fallbackCluster = {
+      template_term_id: cluster.template_term_id,
+      canonical_name_cn: cluster.canonical_name_cn ?? "",
+      canonical_name_en: cluster.canonical_name_en ?? "",
+      aliases: cluster.aliases ?? [],
+      members: cluster.members ?? []
+    };
+    const matchedTemplateTerm =
+      findTemplateTermById(templateOutline, cluster.template_term_id) ??
+      findTemplateTermForCluster(templateOutline, fallbackCluster);
+
+    return {
+      cluster_id: cluster.cluster_id || `C${String(index + 1).padStart(3, "0")}`,
+      canonical_name_cn: cluster.canonical_name_cn || matchedTemplateTerm?.name_cn || "",
+      canonical_name_en: cluster.canonical_name_en || matchedTemplateTerm?.name_en || "",
+      members: cluster.members ?? [],
+      aliases:
+        cluster.aliases && cluster.aliases.length > 0
+          ? cluster.aliases
+          : Array.from(new Set((cluster.members ?? []).map((member) => member.term_name))).filter(
+              (name) => name.trim().length > 0
+            ),
+      is_orphan: Boolean(cluster.is_orphan),
+      in_template_scope:
+        typeof cluster.in_template_scope === "boolean"
+          ? cluster.in_template_scope
+          : Boolean(matchedTemplateTerm),
+      template_term_id: cluster.template_term_id ?? matchedTemplateTerm?.template_term_id,
+      gold_standard_term: matchedTemplateTerm
+        ? goldStandardTemplateIds.has(matchedTemplateTerm.template_term_id)
+        : false,
+      confidence:
+        typeof cluster.confidence === "number"
+          ? Math.max(0, Math.min(1, cluster.confidence))
+          : undefined,
+      rationale: cluster.rationale ?? "",
+      mapping_type: normalizeMappingType(cluster.mapping_type),
+      include_in_scope: true,
+      suggested_chapter: cluster.suggested_chapter ?? matchedTemplateTerm?.chapter ?? "",
+      mounting_reason: cluster.mounting_reason ?? ""
+    };
+  });
+
+  const existingTemplateIds = new Set(
+    normalized
+      .map((cluster) => cluster.template_term_id)
+      .filter((templateTermId): templateTermId is string => Boolean(templateTermId))
+  );
+
+  const missingTemplateClusters = templateOutline.terms
+    .filter((term) => !existingTemplateIds.has(term.template_term_id))
+    .map((term, index) => ({
+      cluster_id: `TM${String(index + 1).padStart(3, "0")}`,
+      canonical_name_cn: term.name_cn,
+      canonical_name_en: term.name_en,
+      members: [],
+      aliases: [],
+      is_orphan: false,
+      in_template_scope: true,
+      template_term_id: term.template_term_id,
+      gold_standard_term: goldStandardTemplateIds.has(term.template_term_id),
+      confidence: undefined,
+      rationale: "模板骨架补齐",
+      mapping_type: undefined,
+      include_in_scope: true,
+      suggested_chapter: term.chapter,
+      mounting_reason: ""
+    }));
+
+  return [...normalized, ...missingTemplateClusters];
 }
 
 function createClusterId() {
@@ -65,6 +122,10 @@ export default function Phase0Page() {
       setError("请先在顶栏填写 Gemini API Key。");
       return;
     }
+    if (!state.template_outline) {
+      setError("请先在阶段一上传模板骨架。");
+      return;
+    }
     if (state.parsed_docs.length === 0) {
       setError("请先在阶段一上传并解析文档。");
       return;
@@ -78,6 +139,8 @@ export default function Phase0Page() {
 
       const prompt = buildAlignmentPrompt({
         parsedDocs: state.parsed_docs,
+        templateOutline: state.template_outline,
+        goldStandardEntries: state.gold_standard_entries,
         preclusterCandidates: preclusterResult.candidates,
         preclusterGroups: preclusterResult.groups
       });
@@ -91,7 +154,11 @@ export default function Phase0Page() {
           responseSchema: ALIGNMENT_RESPONSE_SCHEMA
         }
       });
-      const clusters = normalizeClusters(result);
+      const clusters = normalizeClusters(
+        result,
+        state.template_outline,
+        new Set(state.gold_standard_entries.map((entry) => entry.template_term_id))
+      );
       updateClusters(clusters);
       setSelectedIds([]);
     } catch (alignmentError) {
@@ -149,6 +216,8 @@ export default function Phase0Page() {
       members: [member],
       aliases: [member.term_name],
       is_orphan: true,
+      in_template_scope: false,
+      template_term_id: undefined,
       confidence: cluster.confidence,
       rationale: "从原簇拆分",
       mapping_type: normalizeMappingType(cluster.mapping_type),
@@ -178,6 +247,9 @@ export default function Phase0Page() {
       ...head,
       members: Array.from(mergedMembers.values()),
       is_orphan: selected.every((cluster) => cluster.is_orphan),
+      in_template_scope: selected.some((cluster) => cluster.in_template_scope),
+      template_term_id: selected.find((cluster) => cluster.template_term_id)?.template_term_id,
+      gold_standard_term: selected.some((cluster) => cluster.gold_standard_term),
       include_in_scope: selected.some((cluster) => cluster.include_in_scope ?? true)
     };
 

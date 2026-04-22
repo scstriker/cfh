@@ -1,5 +1,5 @@
 import mammoth from "mammoth";
-import type { ParsedDoc, Term } from "@/lib/types";
+import type { ParsedDoc, RawParsedDoc, RawTermCandidate, Term } from "@/lib/types";
 
 const KNOWN_AUTHORS = [
   "宋凤麒",
@@ -12,7 +12,7 @@ const KNOWN_AUTHORS = [
   "陈磊"
 ];
 
-interface TermDraft {
+interface RawTermDraft {
   id: string;
   chapter: string;
   name_cn: string;
@@ -166,7 +166,7 @@ function isDefinitionCandidate(line: string) {
 }
 
 function parseFallbackTerms(lines: string[]) {
-  const terms: Term[] = [];
+  const terms: RawTermCandidate[] = [];
   const seen = new Set<string>();
   let currentChapter = "术语和定义";
 
@@ -217,8 +217,8 @@ function parseFallbackTerms(lines: string[]) {
     terms.push({
       id: `F${String(terms.length + 1).padStart(3, "0")}`,
       chapter: currentChapter || "术语和定义",
-      name_cn: header.name_cn,
-      name_en: header.name_en,
+      raw_name_cn: header.name_cn,
+      raw_name_en: header.name_en,
       definition,
       has_definition: definition.length > 0
     });
@@ -227,7 +227,7 @@ function parseFallbackTerms(lines: string[]) {
   return terms;
 }
 
-function finalizeTerm(draft: TermDraft | null): Term | null {
+function finalizeRawTerm(draft: RawTermDraft | null): RawTermCandidate | null {
   if (!draft) {
     return null;
   }
@@ -236,8 +236,8 @@ function finalizeTerm(draft: TermDraft | null): Term | null {
   return {
     id: draft.id,
     chapter: draft.chapter,
-    name_cn: draft.name_cn,
-    name_en: draft.name_en,
+    raw_name_cn: draft.name_cn,
+    raw_name_en: draft.name_en,
     definition,
     has_definition: definition.length > 0
   };
@@ -256,6 +256,18 @@ function linesFromHtml(html: string) {
   return lines;
 }
 
+export async function extractDocxLines(file: Pick<File, "arrayBuffer">) {
+  const arrayBuffer = await file.arrayBuffer();
+  const input: { arrayBuffer: ArrayBuffer; buffer?: Uint8Array } = {
+    arrayBuffer
+  };
+  if (typeof Buffer !== "undefined") {
+    input.buffer = Buffer.from(arrayBuffer);
+  }
+  const result = await mammoth.convertToHtml(input as unknown as { arrayBuffer: ArrayBuffer });
+  return linesFromHtml(result.value);
+}
+
 export function extractAuthorFromFileName(fileName: string) {
   const directMatch = KNOWN_AUTHORS.find((author) => fileName.includes(author));
   if (directMatch) {
@@ -272,20 +284,10 @@ export function extractAuthorFromFileName(fileName: string) {
   return tokens[tokens.length - 1];
 }
 
-export async function parseDocx(file: File): Promise<ParsedDoc> {
-  const arrayBuffer = await file.arrayBuffer();
-  const input: { arrayBuffer: ArrayBuffer; buffer?: Uint8Array } = {
-    arrayBuffer
-  };
-  if (typeof Buffer !== "undefined") {
-    input.buffer = Buffer.from(arrayBuffer);
-  }
-  const result = await mammoth.convertToHtml(input as unknown as { arrayBuffer: ArrayBuffer });
-  const lines = linesFromHtml(result.value);
-
+export function parseRawTermsFromLines(lines: string[]) {
   let currentChapter = "未分类";
-  let currentTerm: TermDraft | null = null;
-  const terms: Term[] = [];
+  let currentTerm: RawTermDraft | null = null;
+  const terms: RawTermCandidate[] = [];
 
   lines.forEach((line) => {
     if (isChapterLine(line)) {
@@ -294,7 +296,7 @@ export async function parseDocx(file: File): Promise<ParsedDoc> {
     }
 
     if (isTermLine(line)) {
-      const finalized = finalizeTerm(currentTerm);
+      const finalized = finalizeRawTerm(currentTerm);
       if (finalized) {
         terms.push(finalized);
       }
@@ -320,13 +322,29 @@ export async function parseDocx(file: File): Promise<ParsedDoc> {
     }
   });
 
-  const finalized = finalizeTerm(currentTerm);
+  const finalized = finalizeRawTerm(currentTerm);
   if (finalized) {
     terms.push(finalized);
   }
 
-  const normalizedTerms = terms.filter((term) => term.name_cn.trim().length > 0);
-  const parsedTerms = normalizedTerms.length > 0 ? normalizedTerms : parseFallbackTerms(lines);
+  const normalizedTerms = terms.filter((term) => term.raw_name_cn.trim().length > 0);
+  return normalizedTerms.length > 0 ? normalizedTerms : parseFallbackTerms(lines);
+}
+
+export function parseTermsFromLines(lines: string[]) {
+  return parseRawTermsFromLines(lines).map((term) => ({
+    id: term.id,
+    chapter: term.chapter,
+    name_cn: term.raw_name_cn,
+    name_en: term.raw_name_en,
+    definition: term.definition,
+    has_definition: term.has_definition
+  }));
+}
+
+export async function parseRawDocx(file: File): Promise<RawParsedDoc> {
+  const lines = await extractDocxLines(file);
+  const parsedTerms = parseRawTermsFromLines(lines);
 
   return {
     id: crypto.randomUUID(),
@@ -334,5 +352,23 @@ export async function parseDocx(file: File): Promise<ParsedDoc> {
     author: extractAuthorFromFileName(file.name),
     terms: parsedTerms,
     uploaded_at: new Date().toISOString()
+  };
+}
+
+export async function parseDocx(file: File): Promise<ParsedDoc> {
+  const rawDoc = await parseRawDocx(file);
+  return {
+    id: rawDoc.id,
+    file_name: rawDoc.file_name,
+    author: rawDoc.author,
+    terms: rawDoc.terms.map((term) => ({
+      id: term.id,
+      chapter: term.chapter,
+      name_cn: term.raw_name_cn,
+      name_en: term.raw_name_en,
+      definition: term.definition,
+      has_definition: term.has_definition
+    })),
+    uploaded_at: rawDoc.uploaded_at
   };
 }
