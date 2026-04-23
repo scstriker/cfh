@@ -3,12 +3,12 @@
 import type { PropsWithChildren } from "react";
 import { useEffect } from "react";
 import { usePathname } from "next/navigation";
+import { CloudAccessGate } from "@/components/layout/CloudAccessGate";
 import { Header } from "@/components/layout/Header";
 import { Sidebar } from "@/components/layout/Sidebar";
 import { useAppContext } from "@/store/AppContext";
 
 const phaseByPath = {
-  "/phase0": "phase0",
   "/phase1": "phase1",
   "/phase2": "phase2",
   "/phase3": "phase3",
@@ -28,6 +28,7 @@ export function AppShell({ children }: PropsWithChildren) {
 
   return (
     <div className="mx-auto grid min-h-screen max-w-[1440px] grid-cols-1 gap-4 p-4 lg:grid-cols-[260px_1fr]">
+      <CloudAccessGate />
       <div className="lg:sticky lg:top-4 lg:h-[calc(100vh-2rem)]">
         <Sidebar />
       </div>

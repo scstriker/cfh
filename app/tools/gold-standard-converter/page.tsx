@@ -16,6 +16,7 @@ import {
   type GoldStandardConversionResponse
 } from "@/lib/prompts";
 import { runQualityChecks } from "@/lib/postprocess";
+import { requiresUserGeminiApiKey } from "@/lib/runtimeMode";
 import type { GoldStandardEntry, QualityFlag } from "@/lib/types";
 import { useAppContext } from "@/store/AppContext";
 
@@ -108,7 +109,7 @@ export default function GoldStandardConverterPage() {
       setError("请先在阶段一上传模板骨架。");
       return;
     }
-    if (!state.api_key.trim()) {
+    if (requiresUserGeminiApiKey() && !state.api_key.trim()) {
       setError("请先填写 Gemini API Key。");
       return;
     }
@@ -176,7 +177,11 @@ export default function GoldStandardConverterPage() {
       setMessage(`已生成 ${deduped.size} 条金标准候选，请逐条检查后导出 CSV。`);
     } catch (generationError) {
       console.error(generationError);
-      setError("候选生成失败，请检查 API Key、网络或源文本后重试。");
+      setError(
+        requiresUserGeminiApiKey()
+          ? "候选生成失败，请检查 API Key、网络或源文本后重试。"
+          : "候选生成失败，请检查网络、云端代理或源文本后重试。"
+      );
     } finally {
       setIsGenerating(false);
     }
@@ -227,7 +232,10 @@ export default function GoldStandardConverterPage() {
       <Card title="金标准转换工具">
         <div className="space-y-3 text-sm">
           <p className="text-cfh-muted">
-            将百问百答这类非标准写法材料转换为可导入主流程的金标准 CSV。运行前需保证当前会话已加载模板骨架并填写 Gemini API Key。
+            将百问百答这类非标准写法材料转换为可导入主流程的金标准 CSV。运行前需保证当前会话已加载模板骨架，
+            {requiresUserGeminiApiKey()
+              ? "并填写 Gemini API Key。"
+              : "并确保云端代理可用。"}
           </p>
           <p className="text-xs text-cfh-muted">
             规则来源已固化在仓库中：标准定义写法由 Prompt 合约 + 本地质量校验共同约束，不在运行时动态读取其他国标 PDF。

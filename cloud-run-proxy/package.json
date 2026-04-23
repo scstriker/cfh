@@ -1,0 +1,13 @@
+{
+  "name": "cfh-cloud-run-proxy",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cloud Run Gemini proxy for the CFH web app",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
+

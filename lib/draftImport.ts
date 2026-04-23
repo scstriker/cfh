@@ -22,6 +22,8 @@ type DerivedTermState = {
   term: RawTermCandidate;
   current_name_cn: string;
   current_name_en: string;
+  current_definition: string;
+  current_has_definition: boolean;
   dropped: boolean;
 };
 
@@ -265,6 +267,8 @@ function createDerivedState(rawDoc: RawParsedDoc, term: RawTermCandidate): Deriv
     term,
     current_name_cn: term.raw_name_cn,
     current_name_en: term.raw_name_en,
+    current_definition: term.definition,
+    current_has_definition: term.has_definition,
     dropped: false
   };
 }
@@ -313,71 +317,100 @@ function applyBaseDecision(
   }
 }
 
-function applyDuplicateDecision(
-  state: DerivedTermState,
-  decision: DraftCleaningDecision | undefined
-) {
-  if (!decision) {
-    return;
+function scoreStateForAutoDedup(state: DerivedTermState) {
+  let score = 0;
+  const rawNameCn = cleanText(state.term.raw_name_cn);
+  const currentNameCn = cleanText(state.current_name_cn);
+  const rawNameEn = cleanText(state.term.raw_name_en);
+  const currentNameEn = cleanText(state.current_name_en);
+  const definitionLength = cleanText(state.current_definition).length;
+
+  if (rawNameCn === currentNameCn) {
+    score += 4;
+  }
+  if (state.current_has_definition) {
+    score += 4;
+  }
+  if (currentNameEn) {
+    score += 1;
+  }
+  if (rawNameEn && rawNameEn === currentNameEn) {
+    score += 1;
   }
 
-  if (decision.action === "keep_raw") {
-    state.current_name_cn = state.term.raw_name_cn;
-    state.current_name_en = state.term.raw_name_en;
-    state.dropped = false;
-    return;
+  score += Math.min(definitionLength / 80, 2);
+  return score;
+}
+
+function absorbDuplicateState(target: DerivedTermState, candidate: DerivedTermState) {
+  const targetDefinition = cleanText(target.current_definition);
+  const candidateDefinition = cleanText(candidate.current_definition);
+  const targetEnglish = cleanText(target.current_name_en);
+  const candidateEnglish = cleanText(candidate.current_name_en);
+
+  if ((!target.current_has_definition && candidate.current_has_definition) || candidateDefinition.length > targetDefinition.length) {
+    target.current_definition = candidate.current_definition;
+    target.current_has_definition = candidate.current_has_definition;
   }
 
-  if (decision.action === "manual_edit") {
-    applyManualDecision(state, decision, state.current_name_cn, state.current_name_en);
+  if (!targetEnglish && candidateEnglish) {
+    target.current_name_en = candidate.current_name_en;
   }
 }
 
-function buildDuplicateIssues(states: DerivedTermState[]) {
+function autoDeduplicateStates(states: DerivedTermState[]) {
   const groups = new Map<string, DerivedTermState[]>();
 
   states.forEach((state) => {
     if (state.dropped) {
       return;
     }
-    const key = `${state.doc_id}::${normalizeDraftTermKey(state.current_name_cn)}`;
-    if (!normalizeDraftTermKey(state.current_name_cn)) {
+    const normalizedName = normalizeDraftTermKey(state.current_name_cn);
+    if (!normalizedName) {
       return;
     }
+    const key = `${state.doc_id}::${normalizedName}`;
     const list = groups.get(key) ?? [];
     list.push(state);
     groups.set(key, list);
   });
 
-  const issues: DraftCleaningIssue[] = [];
+  let autoDedupedCount = 0;
+
   groups.forEach((members) => {
     if (members.length <= 1) {
       return;
     }
-    members.forEach((member) => {
-      const related = members.filter((candidate) => candidate.term.id !== member.term.id);
-      issues.push(
-        buildIssue({
-          issue_id: buildDuplicateIssueId(member.doc_id, member.term.id),
-          author: member.author,
-          file_name: member.file_name,
-          raw_term_id: member.term.id,
-          issue_type: "post_clean_duplicate",
-          raw_name_cn: member.term.raw_name_cn,
-          raw_name_en: member.term.raw_name_en,
-          reason: `清洗后与同一专家稿中的术语重名：${related
-            .map((candidate) => candidate.current_name_cn)
-            .join(" / ")}。请保留原词或手动改名。`,
-          confidence: 1,
-          blocking: true,
-          suggested_action: "none",
-          related_raw_term_ids: related.map((candidate) => candidate.term.id)
-        })
-      );
+
+    const sorted = [...members].sort((left, right) => {
+      const scoreDelta = scoreStateForAutoDedup(right) - scoreStateForAutoDedup(left);
+      if (scoreDelta !== 0) {
+        return scoreDelta;
+      }
+
+      const definitionDelta =
+        cleanText(right.current_definition).length - cleanText(left.current_definition).length;
+      if (definitionDelta !== 0) {
+        return definitionDelta;
+      }
+
+      const englishDelta = cleanText(right.current_name_en).length - cleanText(left.current_name_en).length;
+      if (englishDelta !== 0) {
+        return englishDelta;
+      }
+
+      return left.term.id.localeCompare(right.term.id);
+    });
+
+    const [winner, ...duplicates] = sorted;
+    duplicates.forEach((duplicate) => {
+      absorbDuplicateState(winner, duplicate);
+      duplicate.dropped = true;
+      autoDedupedCount += 1;
     });
   });
 
-  return issues;
+  return autoDedupedCount;
 }
 
 function buildParsedDocs(rawDocs: RawParsedDoc[], states: DerivedTermState[]): ParsedDoc[] {
@@ -398,8 +431,8 @@ function buildParsedDocs(rawDocs: RawParsedDoc[], states: DerivedTermState[]): P
         chapter: state.term.chapter,
         name_cn: cleanText(state.current_name_cn) || state.term.raw_name_cn,
         name_en: cleanText(state.current_name_en),
-        definition: state.term.definition,
-        has_definition: state.term.has_definition
+        definition: state.current_definition,
+        has_definition: state.current_has_definition
       }))
   }));
 }
@@ -408,7 +441,8 @@ function buildSummary(
   rawDocs: RawParsedDoc[],
   issues: DraftCleaningIssue[],
   baseIssues: DraftCleaningIssue[],
-  decisions: Record<string, DraftCleaningDecision>
+  decisions: Record<string, DraftCleaningDecision>,
+  autoDedupedCount: number
 ): DraftCleaningSummary {
   const issueCounts = emptyIssueCounts();
   issues.forEach((issue) => {
@@ -437,6 +471,7 @@ function buildSummary(
     term_count: rawDocs.reduce((sum, doc) => sum + doc.terms.length, 0),
     issue_count: issues.length,
     blocking_issue_count: issues.filter((issue) => issue.blocking).length,
+    auto_deduped_count: autoDedupedCount,
     issue_counts: issueCounts,
     accepted_samples: acceptedSamples
   };
@@ -484,41 +519,23 @@ export function resolvePendingImportBatch(
       return state;
     })
   );
-
-  const stateByKey = new Map<string, DerivedTermState>(
-    states.map((state) => [`${state.doc_id}::${state.term.id}`, state] as const)
-  );
-
-  Object.values(decisions).forEach((decision) => {
-    if (!decision.issue_id.startsWith("dup:")) {
-      return;
-    }
-    const rawKey = decision.issue_id.replace(/^dup:/, "");
-    const state = stateByKey.get(rawKey);
-    if (!state) {
-      return;
-    }
-    applyDuplicateDecision(state, decision);
-  });
-
-  const duplicateIssues = buildDuplicateIssues(states);
+  const autoDedupedCount = autoDeduplicateStates(states);
   const issues: DraftCleaningIssue[] = [
     ...batch.base_issues.map((issue): DraftCleaningIssue => ({
       ...issue,
       status: decisions[issue.issue_id] ? "resolved" : "pending"
-    })),
-    ...duplicateIssues
+    }))
   ];
 
   const cleanedDocs = buildParsedDocs(batch.raw_docs, states);
   const unresolvedBaseIssueCount = batch.base_issues.filter((issue) => !decisions[issue.issue_id]).length;
-  const canSubmit = unresolvedBaseIssueCount === 0 && duplicateIssues.length === 0;
+  const canSubmit = unresolvedBaseIssueCount === 0;
 
   return {
     issues,
     cleaned_docs: cleanedDocs,
     can_submit: canSubmit,
-    summary: buildSummary(batch.raw_docs, issues, batch.base_issues, decisions)
+    summary: buildSummary(batch.raw_docs, issues, batch.base_issues, decisions, autoDedupedCount)
   };
 }
 

@@ -39,15 +39,62 @@ const ISSUE_TONE: Record<DraftCleaningIssue["issue_type"], "neutral" | "warning"
 
 function decisionLabel(decision?: DraftCleaningDecision) {
   if (!decision) {
-    return "待处理";
+    return "待决策";
   }
   if (decision.action === "accept_cleaning") {
-    return "已采纳清洗";
+    return "已采纳建议";
   }
   if (decision.action === "keep_raw") {
     return "保留原始";
   }
   return "已手动编辑";
+}
+
+function renderTermName(nameCn: string, nameEn?: string) {
+  return (
+    <>
+      <span className="font-medium">{nameCn}</span>
+      {nameEn ? <span className="text-cfh-muted"> / {nameEn}</span> : null}
+    </>
+  );
+}
+
+function currentResultLabel(issue: DraftCleaningIssue, decision?: DraftCleaningDecision) {
+  if (!decision) {
+    return null;
+  }
+
+  if (decision.action === "keep_raw") {
+    return {
+      text: "当前处理结果：保留原始术语",
+      tone: "warning" as const,
+      value: renderTermName(issue.raw_name_cn, issue.raw_name_en)
+    };
+  }
+
+  if (decision.action === "manual_edit") {
+    const nameCn = decision.manual_name_cn?.trim() || issue.suggested_name_cn || issue.raw_name_cn;
+    const nameEn = decision.manual_name_en?.trim() || issue.suggested_name_en || issue.raw_name_en;
+    return {
+      text: "当前处理结果：已按手动编辑保存",
+      tone: "success" as const,
+      value: renderTermName(nameCn, nameEn)
+    };
+  }
+
+  if (issue.suggested_action === "drop") {
+    return {
+      text: "当前处理结果：已忽略该伪词条",
+      tone: "success" as const,
+      value: <span className="font-medium">该条不会进入最终导入结果</span>
+    };
+  }
+
+  return {
+    text: "当前处理结果：已采纳清洗建议",
+    tone: "success" as const,
+    value: renderTermName(issue.suggested_name_cn ?? issue.raw_name_cn, issue.suggested_name_en ?? issue.raw_name_en)
+  };
 }
 
 function IssueCard({
@@ -63,13 +110,17 @@ function IssueCard({
   onKeepRaw: (issueId: string) => void;
   onManualSave: (issueId: string, nameCn: string, nameEn: string) => void;
 }) {
-  const [manualOpen, setManualOpen] = useState(false);
+  const [manualOpen, setManualOpen] = useState(decision?.action === "manual_edit");
   const [manualNameCn, setManualNameCn] = useState(
     decision?.manual_name_cn ?? issue.suggested_name_cn ?? issue.raw_name_cn
   );
   const [manualNameEn, setManualNameEn] = useState(
     decision?.manual_name_en ?? issue.suggested_name_en ?? issue.raw_name_en
   );
+  const resultLabel = currentResultLabel(issue, decision);
+  const acceptSelected = decision?.action === "accept_cleaning";
+  const keepRawSelected = decision?.action === "keep_raw";
+  const manualSelected = decision?.action === "manual_edit";
 
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-3">
@@ -77,7 +128,7 @@ function IssueCard({
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone={ISSUE_TONE[issue.issue_type]}>{ISSUE_LABEL[issue.issue_type]}</Badge>
           <Badge tone={issue.status === "resolved" ? "success" : "warning"}>
-            {issue.status === "resolved" ? "已处理" : "待处理"}
+            {issue.status === "resolved" ? "已决策" : "待决策"}
           </Badge>
           <Badge tone={issue.blocking ? "danger" : "neutral"}>{decisionLabel(decision)}</Badge>
         </div>
@@ -116,23 +167,44 @@ function IssueCard({
           置信度：{Math.round(issue.confidence * 100)}%
           {issue.template_term_id ? ` / 模板锚点：${issue.template_term_id}` : ""}
         </p>
+        {resultLabel ? (
+          <div
+            className={[
+              "rounded-md border px-3 py-2 text-sm",
+              resultLabel.tone === "success"
+                ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+                : "border-amber-200 bg-amber-50 text-amber-900"
+            ].join(" ")}
+          >
+            <p>{resultLabel.text}</p>
+            <p className="mt-1">{resultLabel.value}</p>
+          </div>
+        ) : null}
       </div>
 
       <div className="mt-3 flex flex-wrap gap-2">
         <Button
+          className={acceptSelected ? "ring-2 ring-cfh-accent/25" : ""}
           disabled={issue.suggested_action === "none"}
           onClick={() => onAcceptCleaning(issue.issue_id)}
           type="button"
+          variant={acceptSelected ? "primary" : "secondary"}
         >
           接受清洗结果
         </Button>
-        <Button onClick={() => onKeepRaw(issue.issue_id)} type="button" variant="secondary">
+        <Button
+          className={keepRawSelected ? "ring-2 ring-cfh-accent/25" : ""}
+          onClick={() => onKeepRaw(issue.issue_id)}
+          type="button"
+          variant={keepRawSelected ? "primary" : "secondary"}
+        >
           保留原始结果
         </Button>
         <Button
+          className={manualSelected ? "ring-2 ring-cfh-accent/25" : ""}
           onClick={() => setManualOpen((open) => !open)}
           type="button"
-          variant="ghost"
+          variant={manualSelected ? "secondary" : "ghost"}
         >
           {manualOpen ? "收起手动编辑" : "手动编辑后保存"}
         </Button>
@@ -210,6 +282,9 @@ export function DraftCleaningReview({
               {resolution.summary.blocking_issue_count > 0
                 ? ` / 阻断 ${resolution.summary.blocking_issue_count} 条`
                 : ""}
+              {resolution.summary.auto_deduped_count > 0
+                ? ` / 自动消重 ${resolution.summary.auto_deduped_count} 条`
+                : ""}
             </p>
           </div>
           <div className="rounded-lg border border-slate-200 bg-white p-3 text-sm">
@@ -241,6 +316,12 @@ export function DraftCleaningReview({
                 </p>
               ))}
             </div>
+          </div>
+        ) : null}
+
+        {resolution.summary.auto_deduped_count > 0 ? (
+          <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-xs text-emerald-900">
+            系统已自动消重 {resolution.summary.auto_deduped_count} 条同名术语，重复项不会再要求人工逐条处理。
           </div>
         ) : null}
 

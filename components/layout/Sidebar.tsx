@@ -5,7 +5,6 @@ import { usePathname } from "next/navigation";
 
 const navItems = [
   { href: "/", label: "首页" },
-  { href: "/phase0", label: "阶段零：概念对齐" },
   { href: "/phase1", label: "阶段一：文档解析" },
   { href: "/phase2", label: "阶段二：AI 合并" },
   { href: "/phase3", label: "阶段三：卡片审阅" },

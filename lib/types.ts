@@ -1,6 +1,10 @@
 export type PhaseId = "phase0" | "phase1" | "phase2" | "phase3" | "phase4";
 export const MAPPING_TYPES = ["exact", "close", "broad", "narrow", "related"] as const;
 export type MappingType = (typeof MAPPING_TYPES)[number];
+export const GOLD_STANDARD_STATUSES = ["pending", "imported", "skipped"] as const;
+export type GoldStandardStatus = (typeof GOLD_STANDARD_STATUSES)[number];
+export const TERM_UNIT_STATUSES = ["pending", "generated", "reviewed"] as const;
+export type TermUnitStatus = (typeof TERM_UNIT_STATUSES)[number];
 export const QUALITY_FLAGS = [
   "sentence_form",
   "logic_order",
@@ -19,6 +23,7 @@ export interface Term {
   name_en: string;
   definition: string;
   has_definition: boolean;
+  template_term_id?: string;
 }
 
 export interface ParsedDoc {
@@ -99,6 +104,7 @@ export interface DraftCleaningSummary {
   term_count: number;
   issue_count: number;
   blocking_issue_count: number;
+  auto_deduped_count: number;
   issue_counts: Record<DraftCleaningIssueType, number>;
   accepted_samples: Array<{
     author: string;
@@ -314,10 +320,11 @@ export interface AppState {
   template_outline: TemplateOutline | null;
   gold_standard_doc: GoldStandardDoc | null;
   gold_standard_entries: GoldStandardEntry[];
+  gold_standard_status: GoldStandardStatus;
   concept_clusters: ConceptCluster[];
+  term_unit_status: TermUnitStatus;
   merge_results: Record<string, MergeResult>;
   review_decisions: Record<string, ReviewDecision>;
   api_key: string;
   current_phase: PhaseId;
-  phase0_locked: boolean;
 }

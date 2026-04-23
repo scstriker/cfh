@@ -5,7 +5,7 @@ import { AppProvider } from "@/store/AppContext";
 
 export const metadata: Metadata = {
   title: "CFH 术语合并系统",
-  description: "原子级制造术语标准草案智能合并系统（Next.js 纯前端版）"
+  description: "原子级制造术语标准草案智能合并系统（静态前端 + 可选云端 Gemini 代理）"
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {

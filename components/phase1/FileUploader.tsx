@@ -7,6 +7,7 @@ import { Card } from "@/components/ui/Card";
 interface FileUploaderProps {
   accept?: string;
   disabled?: boolean;
+  disabledReason?: string;
   description?: string;
   filterFiles?: (files: File[]) => File[];
   multiple?: boolean;
@@ -21,6 +22,7 @@ function filterDocx(files: File[]) {
 export function FileUploader({
   accept = ".docx",
   disabled = false,
+  disabledReason = "",
   description = "拖拽 `.docx` 文件到此处，或点击按钮选择文件（支持多选）。",
   filterFiles = filterDocx,
   multiple = true,
@@ -37,6 +39,9 @@ export function FileUploader({
     const pickedFiles = filterFiles(Array.from(files));
     if (pickedFiles.length > 0) {
       onFilesSelected(pickedFiles);
+    }
+    if (inputRef.current) {
+      inputRef.current.value = "";
     }
   };
 
@@ -63,6 +68,9 @@ export function FileUploader({
         <Button onClick={() => inputRef.current?.click()} type="button" variant="secondary">
           选择文件
         </Button>
+        {disabled && disabledReason ? (
+          <p className="mt-3 text-xs text-amber-700">{disabledReason}</p>
+        ) : null}
         <input
           ref={inputRef}
           accept={accept}

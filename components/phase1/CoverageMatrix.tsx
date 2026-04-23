@@ -20,12 +20,12 @@ export function CoverageMatrix({ docs, conceptClusters = [] }: CoverageMatrixPro
   if (conceptClusters.length > 0) {
     const { authors, rows } = buildConceptCoverageRows({ docs, conceptClusters });
     return (
-      <Card title="覆盖矩阵（行=概念簇，列=专家）">
+      <Card title="工作单元覆盖矩阵（行=术语工作单元，列=专家）">
         <div className="overflow-x-auto">
           <table className="min-w-full border-collapse text-left text-xs">
             <thead>
               <tr className="border-b border-slate-200 text-cfh-muted">
-                <th className="sticky left-0 bg-white px-2 py-2">概念簇</th>
+                <th className="sticky left-0 bg-white px-2 py-2">术语工作单元</th>
                 {authors.map((author) => (
                   <th key={author} className="px-2 py-2">
                     {author}
@@ -72,7 +72,7 @@ export function CoverageMatrix({ docs, conceptClusters = [] }: CoverageMatrixPro
 
   return (
     <Card title="术语预览矩阵（行=术语，列=专家）">
-      <p className="mb-2 text-xs text-cfh-muted">完成阶段零对齐后将切换为概念簇覆盖矩阵。</p>
+      <p className="mb-2 text-xs text-cfh-muted">完成专家稿确认后，系统会自动生成术语工作单元覆盖矩阵。</p>
       <div className="overflow-x-auto">
         <table className="min-w-full border-collapse text-left text-xs">
           <thead>

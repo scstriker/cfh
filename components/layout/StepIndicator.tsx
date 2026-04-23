@@ -1,7 +1,6 @@
 import type { PhaseId } from "@/lib/types";
 
 const steps: Array<{ id: PhaseId; label: string }> = [
-  { id: "phase0", label: "阶段零 对齐" },
   { id: "phase1", label: "阶段一 解析" },
   { id: "phase2", label: "阶段二 合并" },
   { id: "phase3", label: "阶段三 审阅" },
